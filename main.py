@@ -20,6 +20,9 @@ csvHeaders = [
 ]
 
 def checkSpeed():
+    print("Retrieving server list...")
+    st.get_servers()
+
     print("Testing internet speed...")
     st.get_best_server()
 
@@ -39,6 +42,8 @@ def checkSpeed():
 def logToCsv(data_row):
     # Check if file exists before opening it to determine if headers are needed
     file_exists = os.path.exists(LOG_FILE)
+
+    print(f"Logging results to {LOG_FILE}...")
     
     # Open in append mode ('a') with newline='' to prevent blank lines on Windows
     with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as file:
@@ -46,6 +51,7 @@ def logToCsv(data_row):
         
         # If it's a brand-new file, write the header row first
         if not file_exists:
+            print("Creating new log file and writing headers...")
             writer.writerow(csvHeaders)
             
         writer.writerow(data_row)
