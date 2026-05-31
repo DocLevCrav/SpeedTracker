@@ -8,12 +8,14 @@ def checkSpeed():
     st.get_best_server()
     downloadSpeed = st.download() / 1000000  # Convert to Mbps
     uploadSpeed = st.upload() / 1000000  # Convert to Mbps
-    return downloadSpeed, uploadSpeed
+    ping = st.results.ping
+    return downloadSpeed, uploadSpeed, ping
 
 def main():
-    downloadSpeed, uploadSpeed = checkSpeed()
+    downloadSpeed, uploadSpeed, ping = checkSpeed()
     print(f"Download Speed: {downloadSpeed:.2f} Mbps")
     print(f"Upload Speed: {uploadSpeed:.2f} Mbps")
+    print(f"Ping: {ping} ms")
 
     if downloadSpeed < downloadMin:
         print("Download speed is below the minimum threshold.")
