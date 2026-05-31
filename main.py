@@ -3,13 +3,14 @@ import csv
 import os
 from datetime import datetime
 
-st = speedtest.Speedtest()
-downloadMin = 10 # Minimum download speed in Mbps
-uploadMin = 10 # Minimum upload speed in Mbps
+st = speedtest.Speedtest(secure=True)
+DOWNLOAD_MIN = 500 / 2 # Minimum download speed in Mbps
+UPLOAD_MIN = 0 # Minimum upload speed in Mbps
 LOG_FILE = 'speed_tracker_log.csv'
 
-csvHeaders = [
+CSV_HEADERS = [
     'Timestamp', 
+    'Test Type',
     'ISP',
     'Server Name',
     'Server Location',
@@ -19,74 +20,94 @@ csvHeaders = [
     'Status'
 ]
 
-def checkSpeed():
+"""
+Runs the speed test. Picks the best server by default, but if a failed_server_id is provided, it will attempt to select a different server for testing.
+If failed_server_id is passed, it manually selects a different fallback server.
+"""
+def check_speed(failed_server_id=None):
     print("Retrieving server list...")
-    st.get_servers()
+    all_servers = st.get_servers()
 
-    print("Testing internet speed...")
-    st.get_best_server()
-
-    downloadSpeed = st.download() / 1000000  # Convert to Mbps
-    uploadSpeed = st.upload() / 1000000  # Convert to Mbps
-    ping = st.results.ping
-
-    config = st.config.get('client', {})
-    isp = config.get('isp', 'Unknown ISP')
-
-    best_server = st.results.server
-    server_name = best_server.get('sponsor', 'Unknown Server')
-    server_location = f"{best_server.get('name', '')}, {best_server.get('country', '')}"
-
-    return downloadSpeed, uploadSpeed, ping, isp, server_name, server_location
-
-def logToCsv(data_row):
-    # Check if file exists before opening it to determine if headers are needed
-    file_exists = os.path.exists(LOG_FILE)
-
-    print(f"Logging results to {LOG_FILE}...")
-    
-    # Open in append mode ('a') with newline='' to prevent blank lines on Windows
-    with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as file:
-        writer = csv.writer(file)
+    if failed_server_id:
+        print(f"🔄 Selecting a different fallback server (excluding ID: {failed_server_id})...")
         
-        # If it's a brand-new file, write the header row first
-        if not file_exists:
-            print("Creating new log file and writing headers...")
-            writer.writerow(csvHeaders)
-            
-        writer.writerow(data_row)
-    print(f"Successfully logged results to {LOG_FILE}")
+        # Flatten the nested server dictionary into a single list of servers
+        flattened_servers = [server for server_list in all_servers.values() for server in server_list]
+        
+        # Find the first server that doesn't match our failed server ID
+        fallback_server = next((s for s in flattened_servers if s['id'] != failed_server_id), None)
+        
+        if fallback_server:
+            # Assign the server manually to avoid the speedtest-cli library type bug
+            st.results.server = fallback_server
+            print(f"Targeting fallback server: {fallback_server.get('sponsor')} ({fallback_server.get('name')})")
+        else:
+            print("⚠️ Could not find a distinct fallback server. Defaulting to best automatic choice.")
+            st.get_best_server()
+    else:
+        print("Testing internet speed on best automatic server...")
+        st.get_best_server()
 
-def main():
-    downloadSpeed, uploadSpeed, ping, isp, server_name, server_location = checkSpeed()
+    print("Testing download speed...")
+    downloadSpeed = st.download() / 1_000_000  # Convert to Mbps
+    
+    print("Testing upload speed...")
+    uploadSpeed = st.upload() / 1_000_000      # Convert to Mbps
 
-    is_good_download = downloadSpeed >= downloadMin
-    is_good_upload = uploadSpeed >= uploadMin
+    results = st.results
+    isp = st.config.get('client', {}).get('isp', 'Unknown ISP')
+    server_location = f"{results.server.get('name', '')}, {results.server.get('country', '')}"
+
+    return {
+        'download': downloadSpeed,
+        'upload': uploadSpeed,
+        'ping': results.ping,
+        'isp': isp,
+        'server_name': results.server.get('sponsor', 'Unknown Server'),
+        'server_location': server_location,
+        'server_id': results.server.get('id')
+    }
+
+def process_and_log_results(test_type, data):
+    """Evaluates data, prints formatted output, and saves to CSV."""
+    is_good_download = data['download'] >= DOWNLOAD_MIN
+    is_good_upload = data['upload'] >= UPLOAD_MIN
     status = "PASS" if (is_good_download and is_good_upload) else "FAIL"
-
     timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
 
-    print("\n--- TEST RESULTS ---")
+    print(f"\n--- {test_type.upper()} TEST RESULTS ---")
     print(f"Timestamp:       {timestamp}")
-    print(f"ISP:             {isp}")
-    print(f"Server:          {server_name} ({server_location})")
-    print(f"Download Speed:  {downloadSpeed:.2f} Mbps " + ("✅" if is_good_download else "❌ (Below Min)"))
-    print(f"Upload Speed:    {uploadSpeed:.2f} Mbps " + ("✅" if is_good_upload else "❌ (Below Min)"))
-    print(f"Ping:            {ping:.1f} ms\n")
+    print(f"ISP:             {data['isp']}")
+    print(f"Server:          {data['server_name']} ({data['server_location']})")
+    print(f"Download Speed:  {data['download']:.2f} Mbps " + ("✅" if is_good_download else "❌ (Below Min)"))
+    print(f"Upload Speed:    {data['upload']:.2f} Mbps " + ("✅" if is_good_upload else "❌ (Below Min)"))
+    print(f"Ping:            {data['ping']:.1f} ms")
     print(f"Status:          {status}\n")
 
-    data_row = [
-        timestamp,
-        isp,
-        server_name,
-        server_location,
-        round(downloadSpeed, 2),
-        round(uploadSpeed, 2),
-        round(ping, 1),
-        status
-    ]
+    # Log to CSV
+    file_exists = os.path.exists(LOG_FILE)
+    with open(LOG_FILE, mode='a', newline='', encoding='utf-8') as file:
+        writer = csv.writer(file)
+        if not file_exists:
+            writer.writerow(CSV_HEADERS)
+        writer.writerow([
+            timestamp, test_type, data['isp'], data['server_name'], data['server_location'],
+            round(data['download'], 2), round(data['upload'], 2), round(data['ping'], 1), status
+        ])
+        
+    return status
 
-    logToCsv(data_row)
+
+def main():
+    # --- FIRST ATTEMPT ---
+    result_data = check_speed()
+    status = process_and_log_results('Initial', result_data)
+
+    # --- RETRY ATTEMPT ---
+    if status == "FAIL":
+        print(f"🔄 First test FAILED. Running fallback test...")
+        fallback_data = check_speed(failed_server_id=result_data['server_id'])
+        process_and_log_results('Fallback', fallback_data)
 
 if __name__ == "__main__":
     main()
