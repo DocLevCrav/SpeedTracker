@@ -4,8 +4,8 @@ import os
 from datetime import datetime
 
 st = speedtest.Speedtest(secure=True)
-DOWNLOAD_MIN = 500 / 2 # Minimum download speed in Mbps
-UPLOAD_MIN = 0 # Minimum upload speed in Mbps
+DOWNLOAD_MIN = 0 # Default fallback minimum download speed in Mbps
+UPLOAD_MIN = 0   # Default fallback minimum upload speed in Mbps
 LOG_FILE = 'speed_tracker_log.csv'
 
 CSV_HEADERS = [
@@ -49,10 +49,12 @@ def check_speed(failed_server_id=None):
         st.get_best_server()
 
     print("Testing download speed...")
-    downloadSpeed = st.download() / 1_000_000  # Convert to Mbps
+    # Force the library to use 8 parallel threads to calculate download accurately
+    downloadSpeed = st.download(threads=8) / 1_000_000  # Convert to Mbps
     
     print("Testing upload speed...")
-    uploadSpeed = st.upload() / 1_000_000      # Convert to Mbps
+    # Force the library to use 8 parallel threads for upload consistency
+    uploadSpeed = st.upload(threads=8) / 1_000_000      # Convert to Mbps
 
     results = st.results
     isp = st.config.get('client', {}).get('isp', 'Unknown ISP')

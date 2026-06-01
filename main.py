@@ -10,11 +10,17 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
 ctk.set_appearance_mode("System")
 app = ctk.CTk()
 app.title("Internet Speed Tracker")
-app.geometry("800x600") # Expanded geometry to accommodate graphs and data
+app.geometry("1600x600") # Expanded geometry to accommodate graphs and data
 
 # Global reference for the auto-scheduler loop
 scheduler_job = None
 test_is_running = False
+# Default time frame filter for the chart tracking
+current_time_frame = "Past Day"
+# Checkbox Visibility State Flags
+show_min_lines = True
+show_raw_lines = True
+show_smoothed_lines = False
 
 # The display names for the slider intervals
 SLIDER_OPTIONS = ["Manual", "0 mins (Continuous)", "5 mins", "10 mins", "15 mins", "30 mins", "1 hr"]
@@ -24,33 +30,109 @@ SLIDER_VALUES = [-1, 0, 5, 10, 15, 30, 60]
 
 # --- Core Logic Functions ---
 
+def change_time_frame(value):
+    """Callback triggered whenever the segment timeline selector filter changes."""
+    global current_time_frame
+    current_time_frame = value
+    load_graph_data()
+
 def load_graph_data():
-    """Reads CSV data and updates the matplotlib chart trendlines."""
+    """Reads CSV data and updates the speed and ping matplotlib charts simultaneously."""
     if not os.path.exists(LOG_FILE):
         return
 
-    # Clear previous plot
-    ax.clear()
+    # Clear both independent chart plots
+    ax_speed.clear()
+    ax_ping.clear()
     
     try:
         df = pd.read_csv(LOG_FILE)
         if df.empty: return
         
-        # Take up to the last 10 entries to keep the graph readable
-        df = df.tail(10)
+        # 1. Chronological DateTime Conversion
+        df['Timestamp'] = pd.to_datetime(df['Timestamp'])
         
-        # Plot Download and Upload trends
-        ax.plot(df['Timestamp'], df['Download Speed (Mbps)'], marker='o', label='Download', color='#1f77b4')
-        ax.plot(df['Timestamp'], df['Upload Speed (Mbps)'], marker='o', label='Upload', color='#2ca02c')
+        # 2. Time-window segmentation filtering
+        now = pd.Timestamp.now()
+        if current_time_frame == "Past Hour":
+            cutoff = now - pd.Timedelta(hours=1)
+            df = df[df['Timestamp'] >= cutoff]
+            date_format = '%H:%M:%S'
+        elif current_time_frame == "Past Day":
+            cutoff = now - pd.Timedelta(days=1)
+            df = df[df['Timestamp'] >= cutoff]
+            date_format = '%H:%M'
+        elif current_time_frame == "Past Week":
+            cutoff = now - pd.Timedelta(weeks=1)
+            df = df[df['Timestamp'] >= cutoff]
+            date_format = '%b %d %H:%M'
+        elif current_time_frame == "Past Month":
+            cutoff = now - pd.Timedelta(days=30)
+            df = df[df['Timestamp'] >= cutoff]
+            date_format = '%b %d'
+        else:
+            date_format = '%b %d %H:%M'
+
+        if df.empty:
+            ax_speed.text(0.5, 0.5, f"No data recorded in the {current_time_frame}", 
+                         color="white", ha="center", va="center", transform=ax_speed.transAxes)
+            canvas.draw()
+            return
         
-        ax.set_title("Speed History (Last 10 Tests)", color="white")
-        ax.tick_params(colors='white', axis='x', rotation=20)
-        ax.tick_params(colors='white', axis='y')
-        ax.set_ylabel("Mbps", color="white")
-        ax.legend()
-        ax.grid(True, linestyle='--', alpha=0.3)
+        # 3. Handle Rolling Trend Math Data Mapping
+        if show_smoothed_lines:
+            df['DL_Smooth'] = df['Download Speed (Mbps)'].rolling(window=5, min_periods=1).mean()
+            df['UL_Smooth'] = df['Upload Speed (Mbps)'].rolling(window=5, min_periods=1).mean()
+            df['Ping_Smooth'] = df['Ping (ms)'].rolling(window=5, min_periods=1).mean()
+
+        # 4. RENDER TOP CHART: Bandwidth Speeds (ax_speed)
+        if show_raw_lines:
+            ax_speed.plot(df['Timestamp'], df['Download Speed (Mbps)'], label='Download (Raw)', color='#1f77b4', linewidth=1.2, alpha=0.8)
+            ax_speed.plot(df['Timestamp'], df['Upload Speed (Mbps)'], label='Upload (Raw)', color='#2ca02c', linewidth=1.2, alpha=0.8)
+
+        if show_smoothed_lines:
+            ax_speed.plot(df['Timestamp'], df['DL_Smooth'], label='Download (Smoothed)', color='#6baed6', linewidth=2.2)
+            ax_speed.plot(df['Timestamp'], df['UL_Smooth'], label='Upload (Smoothed)', color='#74c476', linewidth=2.2)
+
+        if show_min_lines:
+            try:
+                dl_text = download_min_entry.get().strip()
+                ul_text = upload_min_entry.get().strip()
+                dl_min = float(dl_text) if dl_text else 0.0
+                ul_min = float(ul_text) if ul_text else 0.0
+            except ValueError:
+                dl_min, ul_min = 0.0, 0.0
+
+            if dl_min > 0:
+                ax_speed.axhline(y=dl_min, color='#1f77b4', linestyle='--', alpha=0.6, label='Min Download')
+                ax_speed.fill_between(df['Timestamp'], 0, dl_min, color='red', alpha=0.03)
+            if ul_min > 0:
+                ax_speed.axhline(y=ul_min, color='#2ca02c', linestyle='--', alpha=0.6, label='Min Upload')
+        
+        ax_speed.set_title(f"Network Performance History ({current_time_frame})", color="white", pad=10)
+        ax_speed.set_ylabel("Mbps", color="white")
+        ax_speed.grid(True, linestyle=':', alpha=0.2)
+        ax_speed.legend(loc="upper left", framealpha=0.2, facecolor="black", edgecolor="none", labelcolor="white", fontsize='x-small')
+        ax_speed.tick_params(colors='white', axis='y')
+
+        # 5. RENDER BOTTOM CHART: Latency/Ping (ax_ping)
+        if show_raw_lines:
+            ax_ping.plot(df['Timestamp'], df['Ping (ms)'], label='Ping (Raw)', color='#d62728', linewidth=1.2, alpha=0.8)
+            
+        if show_smoothed_lines:
+            ax_ping.plot(df['Timestamp'], df['Ping_Smooth'], label='Ping (Smoothed)', color='#ff9896', linewidth=2.2)
+            
+        ax_ping.set_ylabel("Ping (ms)", color="white")
+        ax_ping.grid(True, linestyle=':', alpha=0.2)
+        ax_ping.legend(loc="upper left", framealpha=0.2, facecolor="black", edgecolor="none", labelcolor="white", fontsize='x-small')
+        
+        # 6. Synchronized Timeline X-Axis Formatting
+        import matplotlib.dates as mdates
+        ax_ping.xaxis.set_major_formatter(mdates.DateFormatter(date_format))
+        ax_ping.tick_params(colors='white', axis='x', rotation=25)
+        ax_ping.tick_params(colors='white', axis='y')
+        
         fig.tight_layout()
-        
         canvas.draw()
     except Exception as e:
         print(f"Error updating graph: {e}")
@@ -70,10 +152,10 @@ def async_test_execution():
     test_button.configure(state="disabled")
 
     try:
-        dl_min = float(download_min_entry.get()) if download_min_entry.get() else 250.0
+        dl_min = float(download_min_entry.get()) if download_min_entry.get() else 0.0
         ul_min = float(upload_min_entry.get()) if upload_min_entry.get() else 0.0
     except ValueError:
-        dl_min, ul_min = 250.0, 0.0
+        dl_min, ul_min = 0.0, 0.0
 
     def thread_target():
         try:
@@ -164,6 +246,21 @@ def manage_loop(minutes):
         # Schedule the next test checkpoint in X minutes
         scheduler_job = app.after(minutes * 60000, lambda: manage_loop(minutes))
 
+def toggle_min_lines():
+    global show_min_lines
+    show_min_lines = min_lines_check.get()
+    load_graph_data()
+
+def toggle_raw_lines():
+    global show_raw_lines
+    show_raw_lines = raw_lines_check.get()
+    load_graph_data()
+
+def toggle_smoothed_lines():
+    global show_smoothed_lines
+    show_smoothed_lines = smoothed_lines_check.get()
+    load_graph_data()
+
 
 # --- UI Layout Design Structure ---
 
@@ -174,11 +271,29 @@ control_frame.pack(side="left", fill="y", padx=15, pady=15)
 test_button = ctk.CTkButton(control_frame, text="Run Speed Test", command=async_test_execution)
 test_button.pack(pady=15, padx=10, fill="x")
 
-download_min_entry = ctk.CTkEntry(control_frame, placeholder_text="Min Download Speed (Mbps)")
+download_min_entry = ctk.CTkEntry(control_frame, placeholder_text="Min Download Speed (Default: 0 Mbps)")
 download_min_entry.pack(pady=10, padx=10, fill="x")
+download_min_entry.bind("<KeyRelease>", lambda event: load_graph_data())
 
-upload_min_entry = ctk.CTkEntry(control_frame, placeholder_text="Min Upload Speed (Mbps)")
+upload_min_entry = ctk.CTkEntry(control_frame, placeholder_text="Min Upload Speed (Default: 0 Mbps)")
 upload_min_entry.pack(pady=10, padx=10, fill="x")
+upload_min_entry.bind("<KeyRelease>", lambda event: load_graph_data())
+
+# --- Display Checkbox Options Group ---
+checkbox_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
+checkbox_frame.pack(pady=10, padx=10, fill="x")
+
+raw_lines_check = ctk.CTkCheckBox(checkbox_frame, text="Show Raw Data", command=toggle_raw_lines)
+raw_lines_check.select() # Default to checked
+raw_lines_check.pack(anchor="w", pady=5)
+
+smoothed_lines_check = ctk.CTkCheckBox(checkbox_frame, text="Show Smoothed Trend", command=toggle_smoothed_lines)
+smoothed_lines_check.deselect() # Default to unchecked
+smoothed_lines_check.pack(anchor="w", pady=5)
+
+min_lines_check = ctk.CTkCheckBox(checkbox_frame, text="Show Target Thresholds", command=toggle_min_lines)
+min_lines_check.select() # Default to checked
+min_lines_check.pack(anchor="w", pady=5)
 
 # Slider interface for time variables
 slider_label = ctk.CTkLabel(control_frame, text="Interval: Manual")
@@ -213,13 +328,25 @@ info_panel.pack(pady=10, padx=10, fill="both", expand=True)
 
 
 # Right Side Panel - Visual Graphs over time
+# --- Right Side Panel Layout Update ---
 display_frame = ctk.CTkFrame(app)
 display_frame.pack(side="right", fill="both", expand=True, padx=15, pady=15)
 
-# Matplotlib Figure integration setup
-fig, ax = plt.subplots(figsize=(5, 4), dpi=100)
-fig.patch.set_facecolor('#1e1e1e') # Dark mode theme matching CustomTkinter standard color
-ax.set_facecolor('#1e1e1e')
+time_frame_switch = ctk.CTkSegmentedButton(
+    display_frame, 
+    values=["Past Hour", "Past Day", "Past Week", "Past Month", "All History"],
+    command=change_time_frame
+)
+time_frame_switch.set("Past Day")
+time_frame_switch.pack(pady=(10, 5), padx=10, fill="x")
+
+# Create a figure with 2 subplots vertically stacked (nrows=2, ncols=1)
+# sharex=True locks their horizontal timelines together perfectly!
+fig, (ax_speed, ax_ping) = plt.subplots(nrows=2, ncols=1, figsize=(5, 6), dpi=100, sharex=True)
+
+fig.patch.set_facecolor('#1e1e1e') 
+ax_speed.set_facecolor('#1e1e1e')
+ax_ping.set_facecolor('#1e1e1e')
 
 canvas = FigureCanvasTkAgg(fig, master=display_frame)
 canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
