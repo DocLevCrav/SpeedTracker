@@ -43,14 +43,30 @@ def get_target_thresholds():
     except ValueError:
         return 0.0, 0.0
 
-def load_graph_data():
-    """Reads CSV data and updates speed and ping matplotlib charts."""
-    ax_speed.clear()
-    ax_ping.clear()
-    
-    # Reset face colors after clear operations
+def setup_chart_styling():
+    """Applies static styling, labels, and grid structures to the charts."""
+    # Reset face colors
     ax_speed.set_facecolor('#1e1e1e')
     ax_ping.set_facecolor('#1e1e1e')
+    
+    # Speed Chart (Top) Setup
+    ax_speed.set_title(f"Network Performance History ({current_time_frame})", color="white", pad=10)
+    ax_speed.set_ylabel("Mbps", color="white")
+    ax_speed.grid(True, linestyle=':', alpha=0.2)
+    ax_speed.tick_params(colors='white', axis='y')
+    
+    # Ping Chart (Bottom) Setup
+    ax_ping.set_ylabel("Ping (ms)", color="white")
+    ax_ping.grid(True, linestyle=':', alpha=0.2)
+    ax_ping.tick_params(colors='white', axis='y')
+    ax_ping.tick_params(colors='white', axis='x', rotation=25)
+
+
+def load_graph_data():
+    """Reads CSV data, processes time windows, and updates line graphs efficiently."""
+    ax_speed.clear()
+    ax_ping.clear()
+    setup_chart_styling() # Re-apply the structural layouts
 
     if not os.path.exists(LOG_FILE):
         show_empty_chart_message("No log file detected yet.")
@@ -90,14 +106,14 @@ def load_graph_data():
             show_empty_chart_message(f"No data recorded in the {current_time_frame}")
             return
         
-        # Sort values chronologically to prevent line graphing glitches
+        # Sort chronologically for proper line connections
         df = df.sort_values('Timestamp')
 
-        # 3. Handle Rolling Trend Math Data Mapping
+        # 3. OPTIMIZED: Combined Rolling Trend Math Calculations (#3 Fix)
         if show_smoothed_lines:
-            df['DL_Smooth'] = df['Download Speed (Mbps)'].rolling(window=5, min_periods=1).mean()
-            df['UL_Smooth'] = df['Upload Speed (Mbps)'].rolling(window=5, min_periods=1).mean()
-            df['Ping_Smooth'] = df['Ping (ms)'].rolling(window=5, min_periods=1).mean()
+            target_cols = ['Download Speed (Mbps)', 'Upload Speed (Mbps)', 'Ping (ms)']
+            # Compute rolling averages across all 3 columns at once
+            smoothed_data = df[target_cols].rolling(window=5, min_periods=1).mean()
 
         # 4. RENDER TOP CHART: Bandwidth Speeds (ax_speed)
         if show_raw_lines:
@@ -105,11 +121,11 @@ def load_graph_data():
             ax_speed.plot(df['Timestamp'], df['Upload Speed (Mbps)'], label='Upload (Raw)', color='#2ca02c', linewidth=1.2, alpha=0.8)
 
         if show_smoothed_lines:
-            ax_speed.plot(df['Timestamp'], df['DL_Smooth'], label='Download (Smoothed)', color='#6baed6', linewidth=2.2)
-            ax_speed.plot(df['Timestamp'], df['UL_Smooth'], label='Upload (Smoothed)', color='#74c476', linewidth=2.2)
+            ax_speed.plot(df['Timestamp'], smoothed_data['Download Speed (Mbps)'], label='Download (Smoothed)', color='#6baed6', linewidth=2.2)
+            ax_speed.plot(df['Timestamp'], smoothed_data['Upload Speed (Mbps)'], label='Upload (Smoothed)', color='#74c476', linewidth=2.2)
 
         if show_min_lines:
-            dl_min, ul_min = get_target_thresholds()
+            dl_min, ul_min = get_target_thresholds()  # Assumes helper from #1 redundancy fix
 
             if dl_min > 0:
                 ax_speed.axhline(y=dl_min, color='#1f77b4', linestyle='--', alpha=0.6, label='Min Download')
@@ -117,27 +133,20 @@ def load_graph_data():
             if ul_min > 0:
                 ax_speed.axhline(y=ul_min, color='#2ca02c', linestyle='--', alpha=0.6, label='Min Upload')
         
-        ax_speed.set_title(f"Network Performance History ({current_time_frame})", color="white", pad=10)
-        ax_speed.set_ylabel("Mbps", color="white")
-        ax_speed.grid(True, linestyle=':', alpha=0.2)
+        # Render legends dynamically only if lines are visible
         ax_speed.legend(loc="upper left", framealpha=0.2, facecolor="black", edgecolor="none", labelcolor="white", fontsize='x-small')
-        ax_speed.tick_params(colors='white', axis='y')
 
         # 5. RENDER BOTTOM CHART: Latency/Ping (ax_ping)
         if show_raw_lines:
             ax_ping.plot(df['Timestamp'], df['Ping (ms)'], label='Ping (Raw)', color='#d62728', linewidth=1.2, alpha=0.8)
             
         if show_smoothed_lines:
-            ax_ping.plot(df['Timestamp'], df['Ping_Smooth'], label='Ping (Smoothed)', color='#ff9896', linewidth=2.2)
+            ax_ping.plot(df['Timestamp'], smoothed_data['Ping (ms)'], label='Ping (Smoothed)', color='#ff9896', linewidth=2.2)
             
-        ax_ping.set_ylabel("Ping (ms)", color="white")
-        ax_ping.grid(True, linestyle=':', alpha=0.2)
         ax_ping.legend(loc="upper left", framealpha=0.2, facecolor="black", edgecolor="none", labelcolor="white", fontsize='x-small')
         
         # 6. Synchronized Timeline X-Axis Formatting
         ax_ping.xaxis.set_major_formatter(mdates.DateFormatter(date_format))
-        ax_ping.tick_params(colors='white', axis='x', rotation=25)
-        ax_ping.tick_params(colors='white', axis='y')
         
         fig.tight_layout()
         canvas.draw()
