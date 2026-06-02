@@ -1,53 +1,66 @@
-from testing import run_test, LOG_FILE
-import customtkinter as ctk
-import threading
-import pandas as pd
 import os
+import threading
+import customtkinter as ctk
+import matplotlib.dates as mdates
 import matplotlib.pyplot as plt
+import pandas as pd
 from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+from testing import LOG_FILE, run_test
 
 # --- GUI Setup ---
 ctk.set_appearance_mode("System")
 app = ctk.CTk()
 app.title("Internet Speed Tracker")
-app.geometry("1600x600") # Expanded geometry to accommodate graphs and data
+app.geometry("1600x600")
 
-# Global reference for the auto-scheduler loop
+# Global variables for state management
 scheduler_job = None
 test_is_running = False
-# Default time frame filter for the chart tracking
 current_time_frame = "Past Day"
-# Checkbox Visibility State Flags
+
 show_min_lines = True
 show_raw_lines = True
 show_smoothed_lines = False
 
-# The display names for the slider intervals
 SLIDER_OPTIONS = ["Manual", "0 mins (Continuous)", "5 mins", "10 mins", "15 mins", "30 mins", "1 hr"]
-
-# The actual minute values used by the scheduler loop (-1 represents Manual)
 SLIDER_VALUES = [-1, 0, 5, 10, 15, 30, 60]
 
 # --- Core Logic Functions ---
 
 def change_time_frame(value):
-    """Callback triggered whenever the segment timeline selector filter changes."""
+    """Callback triggered whenever the timeline selector filter changes."""
     global current_time_frame
     current_time_frame = value
     load_graph_data()
 
-def load_graph_data():
-    """Reads CSV data and updates the speed and ping matplotlib charts simultaneously."""
-    if not os.path.exists(LOG_FILE):
-        return
+def get_target_thresholds():
+    """Unified entry parsing to pull minimum thresholds from UI inputs safely."""
+    try:
+        dl_text = download_min_entry.get().strip()
+        ul_text = upload_min_entry.get().strip()
+        return (float(dl_text) if dl_text else 0.0, 
+                float(ul_text) if ul_text else 0.0)
+    except ValueError:
+        return 0.0, 0.0
 
-    # Clear both independent chart plots
+def load_graph_data():
+    """Reads CSV data and updates speed and ping matplotlib charts."""
     ax_speed.clear()
     ax_ping.clear()
     
+    # Reset face colors after clear operations
+    ax_speed.set_facecolor('#1e1e1e')
+    ax_ping.set_facecolor('#1e1e1e')
+
+    if not os.path.exists(LOG_FILE):
+        show_empty_chart_message("No log file detected yet.")
+        return
+
     try:
         df = pd.read_csv(LOG_FILE)
-        if df.empty: return
+        if df.empty:
+            show_empty_chart_message("Log dataset file is empty.")
+            return
         
         # 1. Chronological DateTime Conversion
         df['Timestamp'] = pd.to_datetime(df['Timestamp'])
@@ -74,11 +87,12 @@ def load_graph_data():
             date_format = '%b %d %H:%M'
 
         if df.empty:
-            ax_speed.text(0.5, 0.5, f"No data recorded in the {current_time_frame}", 
-                         color="white", ha="center", va="center", transform=ax_speed.transAxes)
-            canvas.draw()
+            show_empty_chart_message(f"No data recorded in the {current_time_frame}")
             return
         
+        # Sort values chronologically to prevent line graphing glitches
+        df = df.sort_values('Timestamp')
+
         # 3. Handle Rolling Trend Math Data Mapping
         if show_smoothed_lines:
             df['DL_Smooth'] = df['Download Speed (Mbps)'].rolling(window=5, min_periods=1).mean()
@@ -95,13 +109,7 @@ def load_graph_data():
             ax_speed.plot(df['Timestamp'], df['UL_Smooth'], label='Upload (Smoothed)', color='#74c476', linewidth=2.2)
 
         if show_min_lines:
-            try:
-                dl_text = download_min_entry.get().strip()
-                ul_text = upload_min_entry.get().strip()
-                dl_min = float(dl_text) if dl_text else 0.0
-                ul_min = float(ul_text) if ul_text else 0.0
-            except ValueError:
-                dl_min, ul_min = 0.0, 0.0
+            dl_min, ul_min = get_target_thresholds()
 
             if dl_min > 0:
                 ax_speed.axhline(y=dl_min, color='#1f77b4', linestyle='--', alpha=0.6, label='Min Download')
@@ -127,7 +135,6 @@ def load_graph_data():
         ax_ping.legend(loc="upper left", framealpha=0.2, facecolor="black", edgecolor="none", labelcolor="white", fontsize='x-small')
         
         # 6. Synchronized Timeline X-Axis Formatting
-        import matplotlib.dates as mdates
         ax_ping.xaxis.set_major_formatter(mdates.DateFormatter(date_format))
         ax_ping.tick_params(colors='white', axis='x', rotation=25)
         ax_ping.tick_params(colors='white', axis='y')
@@ -137,34 +144,32 @@ def load_graph_data():
     except Exception as e:
         print(f"Error updating graph: {e}")
 
+def show_empty_chart_message(message):
+    """Safely renders clear status updates to empty layout frames."""
+    ax_speed.text(0.5, 0.5, message, color="white", ha="center", va="center", transform=ax_speed.transAxes)
+    ax_ping.text(0.5, 0.5, "No metrics available.", color="gray", ha="center", va="center", transform=ax_ping.transAxes)
+    canvas.draw()
+
 def async_test_execution():
     """Runs the speed test on a background thread to prevent UI freezing."""
     global test_is_running
     
-    # SAFETY CHECK: If a test is already running, do nothing!
     if test_is_running:
-        print("⚠️ Test requested, but a test is already in progress. Skipping.")
         return
         
-    # Set the lock
     test_is_running = True
     status_label.configure(text="Status: Running speed test... Please wait.", text_color="yellow")
     test_button.configure(state="disabled")
 
-    try:
-        dl_min = float(download_min_entry.get()) if download_min_entry.get() else 0.0
-        ul_min = float(upload_min_entry.get()) if upload_min_entry.get() else 0.0
-    except ValueError:
-        dl_min, ul_min = 0.0, 0.0
+    dl_min, ul_min = get_target_thresholds()
 
     def thread_target():
         try:
             status, data = run_test(download_min=dl_min, upload_min=ul_min)
             app.after(0, lambda: update_ui_elements(status, data))
         except Exception as e:
-            print(f"Error during background test: {e}")
-            # Release lock even if it crashes
-            app.after(0, lambda: reset_test_lock()) 
+            print(f"Error during background test execution: {e}")
+            app.after(0, reset_test_lock) 
 
     threading.Thread(target=thread_target, daemon=True).start()
 
@@ -175,24 +180,22 @@ def update_ui_elements(status, data):
     test_button.configure(state="normal")
     
     if status == "PASS":
-        status_label.configure(text=f"Status: PASS", text_color="green")
+        status_label.configure(text="Status: PASS", text_color="green")
     else:
-        status_label.configure(text=f"Status: FAIL", text_color="red")
+        status_label.configure(text="Status: FAIL", text_color="red")
 
     summary_text = (
         f"Latest Test Metrics:\n"
         f"─────────────────────────────\n"
-        f"ISP: {data['isp']}\n"
-        f"Server: {data['server_name']} ({data['server_location']})\n"
-        f"Download: {data['download']:.2f} Mbps\n"
-        f"Upload: {data['upload']:.2f} Mbps\n"
-        f"Ping: {data['ping']:.1f} ms"
+        f"ISP: {data.get('isp', 'Unknown')}\n"
+        f"Server: {data.get('server_name', 'Unknown')} ({data.get('server_location', 'Unknown')})\n"
+        f"Download: {data.get('download', 0.0):.2f} Mbps\n"
+        f"Upload: {data.get('upload', 0.0):.2f} Mbps\n"
+        f"Ping: {data.get('ping', 0.0):.1f} ms"
     )
     info_panel.configure(text=summary_text)
     
     load_graph_data()
-    
-    # Release the lock!
     test_is_running = False
 
 def reset_test_lock():
@@ -203,48 +206,29 @@ def reset_test_lock():
     status_label.configure(text="Status: Error occurred.", text_color="orange")
 
 def handle_schedule_update(value):
-    """Maps the uniform slider index to non-uniform custom time steps."""
+    """Maps uniform slider steps to explicit timing intervals."""
     global scheduler_job
     
-    # Convert slider float value to an integer index (0 to 6)
     idx = int(value)
-    
-    # Update the slider label text dynamically
     slider_label.configure(text=f"Interval: {SLIDER_OPTIONS[idx]}")
     
-    # Cancel any active schedules before setting a new one
     if scheduler_job:
         app.after_cancel(scheduler_job)
         scheduler_job = None
         
     minutes = SLIDER_VALUES[idx]
-    
-    if minutes == 0:
-        # Continuous mode: Start checking immediately
-        manage_loop(0)
-    elif minutes > 0:
-        # Standard timed interval mode
+    if minutes >= 0:
         manage_loop(minutes)
-    else:
-        # Manual mode (-1) does nothing, leaving it idle
-        pass
 
 def manage_loop(minutes):
-    """Recursive callback that runs or queues the next test."""
+    """Recursive callback that runs or queues the next test loop."""
     global scheduler_job
+
+    if not test_is_running:
+        async_test_execution()
     
-    if minutes == 0:
-        # Continuous Mode logic
-        if not test_is_running:
-            async_test_execution()
-        # Check again in 1 second to see if the test finished or is still busy
-        scheduler_job = app.after(1000, lambda: manage_loop(0))
-    else:
-        # Standard Interval logic
-        if not test_is_running:
-            async_test_execution()
-        # Schedule the next test checkpoint in X minutes
-        scheduler_job = app.after(minutes * 60000, lambda: manage_loop(minutes))
+    ms_delay = 1000 if minutes == 0 else minutes * 60000
+    scheduler_job = app.after(ms_delay, lambda: manage_loop(minutes))
 
 def toggle_min_lines():
     global show_min_lines
@@ -261,10 +245,8 @@ def toggle_smoothed_lines():
     show_smoothed_lines = smoothed_lines_check.get()
     load_graph_data()
 
-
 # --- UI Layout Design Structure ---
 
-# Left Side Panel - Configurations & Status
 control_frame = ctk.CTkFrame(app, width=300)
 control_frame.pack(side="left", fill="y", padx=15, pady=15)
 
@@ -279,27 +261,24 @@ upload_min_entry = ctk.CTkEntry(control_frame, placeholder_text="Min Upload Spee
 upload_min_entry.pack(pady=10, padx=10, fill="x")
 upload_min_entry.bind("<KeyRelease>", lambda event: load_graph_data())
 
-# --- Display Checkbox Options Group ---
 checkbox_frame = ctk.CTkFrame(control_frame, fg_color="transparent")
 checkbox_frame.pack(pady=10, padx=10, fill="x")
 
 raw_lines_check = ctk.CTkCheckBox(checkbox_frame, text="Show Raw Data", command=toggle_raw_lines)
-raw_lines_check.select() # Default to checked
+raw_lines_check.select()
 raw_lines_check.pack(anchor="w", pady=5)
 
 smoothed_lines_check = ctk.CTkCheckBox(checkbox_frame, text="Show Smoothed Trend", command=toggle_smoothed_lines)
-smoothed_lines_check.deselect() # Default to unchecked
+smoothed_lines_check.deselect()
 smoothed_lines_check.pack(anchor="w", pady=5)
 
 min_lines_check = ctk.CTkCheckBox(checkbox_frame, text="Show Target Thresholds", command=toggle_min_lines)
-min_lines_check.select() # Default to checked
+min_lines_check.select()
 min_lines_check.pack(anchor="w", pady=5)
 
-# Slider interface for time variables
 slider_label = ctk.CTkLabel(control_frame, text="Interval: Manual")
 slider_label.pack(pady=(15, 0))
 
-# We use from_=0 to to_=6 because we have 7 unique steps in our lists
 interval_slider = ctk.CTkSlider(
     control_frame, 
     from_=0, 
@@ -307,13 +286,12 @@ interval_slider = ctk.CTkSlider(
     number_of_steps=6, 
     command=handle_schedule_update
 )
-interval_slider.set(0) # Start turned off on "Manual"
+interval_slider.set(0)
 interval_slider.pack(pady=10, padx=10, fill="x")
 
 status_label = ctk.CTkLabel(control_frame, text="Status: Idle", font=("Arial", 13, "bold"))
 status_label.pack(pady=15)
 
-# Big information callout box from most previous test
 info_panel = ctk.CTkLabel(
     control_frame, 
     text="No recent test data.\nClick 'Run Speed Test' to begin.", 
@@ -326,9 +304,6 @@ info_panel = ctk.CTkLabel(
 )
 info_panel.pack(pady=10, padx=10, fill="both", expand=True)
 
-
-# Right Side Panel - Visual Graphs over time
-# --- Right Side Panel Layout Update ---
 display_frame = ctk.CTkFrame(app)
 display_frame.pack(side="right", fill="both", expand=True, padx=15, pady=15)
 
@@ -340,18 +315,11 @@ time_frame_switch = ctk.CTkSegmentedButton(
 time_frame_switch.set("Past Day")
 time_frame_switch.pack(pady=(10, 5), padx=10, fill="x")
 
-# Create a figure with 2 subplots vertically stacked (nrows=2, ncols=1)
-# sharex=True locks their horizontal timelines together perfectly!
 fig, (ax_speed, ax_ping) = plt.subplots(nrows=2, ncols=1, figsize=(5, 6), dpi=100, sharex=True)
-
 fig.patch.set_facecolor('#1e1e1e') 
-ax_speed.set_facecolor('#1e1e1e')
-ax_ping.set_facecolor('#1e1e1e')
 
 canvas = FigureCanvasTkAgg(fig, master=display_frame)
 canvas.get_tk_widget().pack(fill="both", expand=True, padx=5, pady=5)
 
-# Initial graph display pull sequence when UI opens
 load_graph_data()
-
 app.mainloop()
